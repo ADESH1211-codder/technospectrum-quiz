@@ -1,5 +1,7 @@
 from flask import Flask, request, redirect, session, send_file
-import sqlite3, time, random
+import sqlite3, time, random, io
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
 
 app = Flask(__name__)
 app.secret_key = "technospectrum_2k26"
@@ -36,7 +38,7 @@ if cur.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0:
     cur.execute("INSERT INTO settings VALUES(1,300,1)")
     con.commit()
 
-# ---------------- UI WRAPPER ----------------
+# ---------------- UI TEMPLATE ----------------
 def page(body):
     return f"""
 <!doctype html>
@@ -44,11 +46,16 @@ def page(body):
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{{background:linear-gradient(135deg,#667eea,#764ba2);}}
+.card{{border-radius:18px}}
+h2{{color:white}}
+</style>
 </head>
-<body style="background:#f3f4f6">
+<body>
 <div class="container mt-4">
-<h3 class="text-center">TECHNOSPECTRUM 2K26</h3>
-<div class="card p-4 mt-3 shadow">{body}</div>
+<h2 class="text-center">TECHNOSPECTRUM 2K26</h2>
+<div class="card p-4 shadow mt-3">{body}</div>
 </div>
 </body>
 </html>
@@ -72,7 +79,7 @@ def register():
 
     return page("""
 <form method="post">
-<input class="form-control mb-2" name="name" placeholder="Name" required>
+<input class="form-control mb-2" name="name" placeholder="Full Name" required>
 <input class="form-control mb-2" name="email" placeholder="Email" required>
 <input class="form-control mb-2" name="contact" placeholder="Contact" required>
 <button class="btn btn-primary w-100">Continue</button>
@@ -91,7 +98,7 @@ def otp():
             con.commit()
             session["pid"] = cur.lastrowid
             return redirect("/quiz")
-        return page("<h4 class='text-danger'>Wrong OTP</h4>")
+        return page("<h4 class='text-danger text-center'>Wrong OTP</h4>")
 
     return page("""
 <form method="post">
@@ -125,7 +132,7 @@ Time Left: <span id="t">{timer}</span> sec
 </div>
 <form method="post" action="/submit">
 {qhtml}
-<button class="btn btn-success w-100">Submit</button>
+<button class="btn btn-success w-100">Submit Quiz</button>
 </form>
 
 <script>
@@ -144,9 +151,7 @@ setInterval(function() {{
 def submit():
     score = 0
     for q, a in request.form.items():
-        if a == cur.execute(
-            "SELECT correct FROM questions WHERE id=?", (q,)
-        ).fetchone()[0]:
+        if a == cur.execute("SELECT correct FROM questions WHERE id=?", (q,)).fetchone()[0]:
             score += 1
 
     cur.execute(
@@ -178,6 +183,53 @@ def admin():
 <a href="/settimer" class="btn btn-info w-100 mb-2">Set Timer</a>
 <a href="/leaderboard" class="btn btn-secondary w-100 mb-2">Leaderboard</a>
 <a href="/graph" class="btn btn-dark w-100 mb-2">Graph</a>
+<a href="/export" class="btn btn-success w-100 mb-2">Download Excel</a>
+""")
+
+# ---------------- ADMIN FEATURES ----------------
+@app.route("/addq", methods=["GET","POST"])
+def addq():
+    if not admin_required():
+        return redirect("/admin")
+
+    if request.method == "POST":
+        cur.execute(
+            "INSERT INTO questions(q,a,b,c,d,correct) VALUES(?,?,?,?,?,?)",
+            (request.form["q"], request.form["a"], request.form["b"],
+             request.form["c"], request.form["d"], request.form["correct"])
+        )
+        con.commit()
+        return redirect("/admin")
+
+    return page("""
+<form method="post">
+<input class="form-control mb-2" name="q" placeholder="Question">
+<input class="form-control mb-2" name="a" placeholder="Option A">
+<input class="form-control mb-2" name="b" placeholder="Option B">
+<input class="form-control mb-2" name="c" placeholder="Option C">
+<input class="form-control mb-2" name="d" placeholder="Option D">
+<select class="form-control mb-2" name="correct">
+<option>a</option><option>b</option><option>c</option><option>d</option>
+</select>
+<button class="btn btn-success w-100">Add Question</button>
+</form>
+""")
+
+@app.route("/leaderboard")
+def leaderboard():
+    if not admin_required():
+        return redirect("/admin")
+
+    rows = cur.execute("SELECT name,score FROM participants ORDER BY score DESC").fetchall()
+    t = ""
+    for i, r in enumerate(rows):
+        t += f"<tr><td>{i+1}</td><td>{r[0]}</td><td>{r[1]}</td></tr>"
+
+    return page(f"""
+<table class="table">
+<tr><th>Rank</th><th>Name</th><th>Score</th></tr>
+{t}
+</table>
 """)
 
 @app.route("/graph")
@@ -185,7 +237,7 @@ def graph():
     if not admin_required():
         return redirect("/admin")
 
-    rows = cur.execute("SELECT name, score FROM participants").fetchall()
+    rows = cur.execute("SELECT name,score FROM participants").fetchall()
     names = [r[0] for r in rows]
     scores = [r[1] for r in rows]
 
@@ -200,16 +252,47 @@ new Chart(document.getElementById("chart"), {{
         datasets: [{{
             label: "Scores",
             data: {scores},
-            backgroundColor: "#0d6efd"
+            backgroundColor: "#6f42c1"
         }}]
     }}
 }});
 </script>
 """)
 
-# ---------------- TIMER ----------------
+@app.route("/export")
+def export():
+    if not admin_required():
+        return redirect("/admin")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.merge_cells("A1:E1")
+    ws["A1"] = "TECHNOSPECTRUM 2K26 – QUIZ RESULTS"
+    ws["A1"].font = Font(bold=True, size=16)
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    ws.append(["Rank","Name","Email","Contact","Score"])
+    for c in ws[2]:
+        c.font = Font(bold=True)
+
+    rows = cur.execute(
+        "SELECT name,email,contact,score FROM participants ORDER BY score DESC"
+    ).fetchall()
+
+    for i, r in enumerate(rows):
+        ws.append([i+1, r[0], r[1], r[2], r[3]])
+
+    for col in "ABCDE":
+        ws.column_dimensions[col].width = 22
+
+    wb.save("Technospectrum_2K26.xlsx")
+    return send_file("Technospectrum_2K26.xlsx", as_attachment=True)
+
 @app.route("/settimer", methods=["GET","POST"])
 def settimer():
+    if not admin_required():
+        return redirect("/admin")
+
     if request.method == "POST":
         total = int(request.form["m"]) * 60 + int(request.form["s"])
         cur.execute("UPDATE settings SET timer=?", (total,))
