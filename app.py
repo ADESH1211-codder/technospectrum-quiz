@@ -2,6 +2,8 @@ from flask import Flask, request, redirect, session, send_file
 import sqlite3, time, random, io
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
+import matplotlib
+matplotlib.use("Agg")   # REQUIRED for Render
 import matplotlib.pyplot as plt
 
 app = Flask(__name__)
@@ -259,3 +261,4 @@ def export():
     return send_file("Technospectrum_2K26.xlsx",as_attachment=True)
 
 app.run(host="0.0.0.0",port=5000)
+
